@@ -1,0 +1,154 @@
+---
+title: "May is Asthma and Allergy Awareness Month"
+author: "Helen Levy-Myers"
+date: "May 21, 2018"
+output: ioslides_presentation
+runtime: shiny
+---
+
+## Many Children are Affected
+
+- 6.1 million children under the age of 18 have asthma.
+- 80% of children have asthma triggered by allergies.
+- Asthma is the most common chronic disease among children today.
+- Asthma is associated with more than 10 million missed school days annually.
+- Poor air quality can make asthma symptoms worse and trigger attacks.
+
+
+Sources:
+
+https://www.cdc.gov/nchs/fastats/asthma.htm
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3151648/
+https://cvp.ucsf.edu/docs/asthma_factsheet.pdf
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4914465/
+https://www3.epa.gov/airnow/asthma-flyer.pdf
+
+## Reproducible Code Showing AQI and Chronic Absenteeism
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(dplyr)
+library(ggplot2)
+library(lazyeval)
+library(purrr)
+library(reshape2)
+library(lubridate)
+library(tidyverse)
+library(tidyr)
+library(readxl)
+library(shiny)
+library(webshot)
+
+#read in data
+dailyAqi2015 <- read.csv("data/daily_aqi_by_county_2015.csv")
+dailyAqi2016 <- read.csv("data/daily_aqi_by_county_2016.csv")
+OCRdata <- read.csv("data/SchoolAbsenteeism1516_updated.csv")
+geodata <- read_csv("data/zipdata.csv")
+
+#add leading zeros to FIPS and combokey codes
+dailyAqi2015$FIPS <- paste(formatC(dailyAqi2015$FIPS, width = 5, flag = "0"))
+dailyAqi2016$FIPS <- paste(formatC(dailyAqi2016$FIPS, width = 5, flag = "0"))
+OCRdata$COMBOKEY <- as.character(OCRdata$COMBOKEY)
+geodata$NCESSCH <- paste(geodata$NCESSCH)
+
+#select only columns needed for shiny app
+dailyAqi2015a <- select(dailyAqi2015, States_Name, countys_Name, FIPS, Date, AQI)
+dailyAqi2016a <- select(dailyAqi2016, States_Name, countys_Name, FIPS, Date, AQI)
+geodata2 <- select(geodata, NCESSCH, FIPS, CONAME, LCITY, LSTATE)
+```
+
+```{r}
+#rbind two datasets together, fix date, state and county names format
+USdaily1516 <-  rbind(dailyAqi2015a, dailyAqi2016a)
+USdaily1516$Date <- mdy(USdaily1516$Date)
+USdaily1516$States_Name <- as.character(USdaily1516$States_Name)
+USdaily1516$countys_Name <- as.character(USdaily1516$countys_Name)
+#assign a value to outliers that still allows it to be graphed as Hazardous but makes the graphs simplier 
+USdaily1516$AQI <- replace(USdaily1516$AQI, USdaily1516$AQI > 349, 350)
+#2013-2014 AQI data by state & county
+USdaily1516b <- group_by(USdaily1516, States_Name, countys_Name)
+#add county name to OCR data, AQI data is by county
+OCRdata2 <- merge(OCRdata, geodata2, by.x = "COMBOKEY", by.y = "NCESSCH")
+
+#calculate absenteeism by county - use weighted average
+countyName1 <- group_by(OCRdata2, LEA_STATE, CONAME)
+countyName1 <- mutate(countyName1, countyEnroll = sum(TOT_ENR_M + TOT_ENR_F))
+countyName1 <- mutate(countyName1, schoolAbsent = sum(TOT_ABSENT_M + TOT_ABSENT_F))
+countyName1 <- filter(countyName1, schoolAbsent >0)
+countyName1 <- mutate(countyName1, countyAbsentPer = (schoolAbsent/countyEnroll)*100)
+countyName3 <-unique(countyName1[c("LEA_STATE", "CONAME", "FIPS", "countyEnroll", "schoolAbsent", "countyAbsentPer")], na.rm= TRUE)
+
+#merge all data sets
+USdaily1516_merged <- merge(countyName3, USdaily1516b, by.x = "FIPS", by.y = "FIPS")
+
+saveRDS(USdaily1516_merged, "usdaily1516.RDS")
+
+```
+
+## Check Out Your State on the Next Slide
+- Lots of data to look at, so it takes a few seconds to load.
+- AQI measures five pollutants, ozone, carbon monoxide, PM2.5, sulfer dioxide, and nitrogen   dioxide.
+- AQI measures range from Good (green), Moderate (yellow), Unhealthy for Sensitive Groups (orange),  Unhealthy (red),  Very Unhealthy (purple), and Hazardous (maroon).
+- The data includes 2015-2016; the red lines show September 1 to May 31, approximately the 2015-16 school year.
+- The counties are ranked by chronic absenteeism rate, weighted to reflect total enrollment. Lower rates mean fewer students missing school (good), and more students regularly attending school (better).
+- Not all counties have AQI monitoring sites, and only counties with AQI monitoring sites are included.
+
+
+## Use Drop Down For Your State's Results
+
+See Your State AQI data for 2015-2016 and the chronic absenteeism rate for many individual counties.
+
+```{r, echo=FALSE, results="as is"}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(tidyverse)
+
+USdaily1516 <- readRDS("usdaily1516.RDS")
+
+#Define UI for state graph
+ui <- fluidRow(
+        verticalLayout(
+                titlePanel("2015-16 State AQI Data"),
+                selectInput(inputId = "stateNames", label = strong("Choose a State"),
+                            choices = unique(USdaily1516$States_Name)
+                ),
+                plotOutput(outputId = "stateAQI")
+        )
+)
+
+#Define Server for graph
+server <- function(input, output){
+        # Subset state data
+        stateDaily1516 <- reactive({
+                filter(USdaily1516, States_Name == input$stateNames)
+        })
+        # Create the plot object the plotOutput function is expecting
+        output$stateAQI <- renderPlot({
+                ggplot(stateDaily1516(), aes(x = Date, y = AQI)) + 
+                        geom_line() +
+                        facet_wrap(~ CONAME + countyAbsentPer, ncol = 5) +
+                        theme_bw() +
+                        theme(axis.text.x = element_text(angle = 45)) +
+                        theme(plot.title = element_text(size=22)) +
+                        theme(axis.title.y = element_text(size = 16)) +
+                        ylim(0, 350) +
+                        coord_fixed(ratio = 2) +
+                        geom_vline(aes(xintercept = as.Date("2015-09-01"), colour = "red")) +
+                        geom_vline(aes(xintercept = as.Date("2016-05-31"), colour = "red")) +
+                        geom_ribbon(aes(ymin = 0, ymax = 50), fill = "#009E73", alpha = .3) +
+                        geom_ribbon(aes(ymin = 51, ymax = 100), fill = "#F0E442", alpha = .3) +
+                        geom_ribbon(aes(ymin = 101, ymax = 150), fill = "#E69F00", alpha = .3) +
+                        geom_ribbon(aes(ymin = 151, ymax = 200), fill ="#D55E00", alpha = .3) +
+                        geom_ribbon(aes(ymin = 200, ymax = 300), fill = "#CC79A7", alpha = .3) +
+                        geom_ribbon(aes(ymin = 301, ymax = 350), fill = "#CC79A7", alpha = .6) +
+                        ggtitle(paste("2015-16 Daily Air Quality Index (AQI) by County in ", input$stateNames)) +
+                        labs(subtitle = "2015-16 School Year Between Red Lines, ranked by weighted chronic absenteeism rate (lower rates better)", 
+                             x = "Date", y = "Daily AQI with Associated Color Codes, Green = Good AQI, Maroon = Hazardous")
+        },
+        width = 800, height = 800
+        )
+} 
+
+#create Shiny object
+shinyApp(ui = ui, server = server)
+```
